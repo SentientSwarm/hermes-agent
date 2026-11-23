@@ -358,7 +358,7 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
     return err or await sender(pconfig, chat_id, message, thread_id=thread_id)
 
 
-async def _resolve_slack_user_target(token, chat_id):
+async def _resolve_slack_user_target(token, chat_id, *, pconfig=None):
     """Resolve ``user:U...`` / ``user_name:<handle>`` to a D... DM conversation (chat.postMessage
     needs a conversation ID); ``user_name:`` goes through users.list first (stable handle match
     only); other ids pass through. ``(chat_id, None)`` or ``(None, error_dict)``."""
@@ -371,11 +371,16 @@ async def _resolve_slack_user_target(token, chat_id):
                       f"{install_hint('messaging')}"}
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        from plugins.platforms.slack.broker_transport import BrokerTransport
+        broker = BrokerTransport.from_config(pconfig)
+        base_url = broker.api_base_url if broker else "https://slack.com/api/"
+        token = broker.bearer if broker else token
+        proxy = broker.proxy_url(base_url) if broker else resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             async def post_api(method, payload):
-                async with session.post(f"https://slack.com/api/{method}", headers=headers, json=payload,
+                async with session.post(f"{base_url}{method}", headers=headers, json=payload,
                                         **_req_kw) as resp:
                     return await resp.json()
 

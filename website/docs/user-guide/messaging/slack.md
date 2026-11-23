@@ -1107,3 +1107,39 @@ treat them like passwords.
 - Rotate tokens periodically via the Slack app settings
 - Audit who has access to your Hermes config directory
 - Socket Mode means no public endpoint is exposed — one less attack surface
+
+## Credential broker (fork integration)
+
+A Slack credential broker can keep bot and app tokens outside the Hermes runtime.
+Enable Slack explicitly and configure three broker routes in `config.yaml`:
+
+```yaml
+platforms:
+  slack:
+    enabled: true
+    extra:
+      broker:
+        api_base_url: http://10.250.4.10:9300/api/slack-wemodulate/
+        socket_base_url: http://10.250.4.10:9300/api/slack-socket/
+        files_base_url: http://10.250.4.10:9300/api/slack-files/
+        agent_token_file: /run/secrets/locksmith-agent
+```
+
+The file contains the Locksmith agent bearer, with mode 0600, outside the checkout.
+Alternatively omit `agent_token_file` and provide the profile-scoped secret
+`SLACK_BROKER_TOKEN`. Do not set `SLACK_BOT_TOKEN` or `SLACK_APP_TOKEN` in this mode;
+saved OAuth tokens in `slack_tokens.json` are ignored. The broker must grant this
+agent access to all three routes and hold the Slack credentials. The API and files
+routes use the bot identity; the socket route uses the app-level credential.
+
+Web API calls (including Bolt request clients and standalone cron delivery) use
+`api_base_url`. `apps.connections.open` uses `socket_base_url`; its returned WebSocket
+connects directly to Slack. Private downloads and upload bytes use `files_base_url`,
+which must have `https://files.slack.com` as its fixed upstream. Files on other CDN
+origins and file redirects are refused. Invalid or incomplete broker configuration
+fails rather than falling back to Slack credentials. Without the `broker` mapping,
+the existing Slack setup and multi-workspace token behavior continue unchanged.
+
+Run `.venv/bin/python qa/smoke/slack_broker.py` to verify the integration against a
+local recording broker, with no real Slack messages or credentials. Mira's deployment
+pin and live cutover are separate operator steps.
