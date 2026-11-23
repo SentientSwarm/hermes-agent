@@ -28,6 +28,8 @@ class BrokerTransport:
         urls = []
         for key in ("api_base_url", "socket_base_url", "files_base_url"):
             value = values.get(key, "")
+            if not isinstance(value, str):
+                raise ValueError(f"Slack broker {key} must be a URL string")
             parsed = urlsplit(value)
             if (parsed.scheme not in ("http", "https") or not parsed.hostname
                     or parsed.username or parsed.password or parsed.query or parsed.fragment):
@@ -39,6 +41,13 @@ class BrokerTransport:
         if not bearer or any(c.isspace() for c in bearer) or bearer.startswith(("xox", "xapp-")):
             raise ValueError("Slack broker requires an agent bearer via agent_token_file or SLACK_BROKER_TOKEN")
         return cls(*urls, bearer)
+
+    def proxy_url(self, url):
+        """Select proxy using the actual broker destination, including NO_PROXY."""
+        from gateway.platforms.base import is_host_excluded_by_no_proxy, resolve_proxy_url
+        if is_host_excluded_by_no_proxy(urlsplit(url).hostname):
+            return None
+        return resolve_proxy_url()
 
     def file_url(self, url):
         parsed = urlsplit(url)
@@ -61,17 +70,20 @@ class BrokerTransport:
     def configure_client(self, client, *, socket=False):
         client.base_url = self.socket_base_url if socket else self.api_base_url
         client.token = self.bearer
+        client.proxy = self.proxy_url(client.base_url)
         # SDK uploads use a provider-returned absolute URL, bypassing base_url.
         # Keep their bytes behind the same fixed files route, too.
         async def upload(*, url, **kwargs):
             import aiohttp
             from slack_sdk.web.file_upload_v2_result import FileUploadV2Result
-            async with aiohttp.ClientSession() as session:
+            from gateway.platforms.base import proxy_kwargs_for_aiohttp
+            session_kwargs, request_kwargs = proxy_kwargs_for_aiohttp(self.proxy_url(self.files_base_url))
+            async with aiohttp.ClientSession(**session_kwargs) as session:
                 async with session.post(
                     self.file_url(url), data=kwargs["data"],
                     headers={"Authorization": f"Bearer {self.bearer}"},
                     timeout=aiohttp.ClientTimeout(total=kwargs["timeout"]),
-                    allow_redirects=False,
+                    allow_redirects=False, **request_kwargs,
                 ) as response:
                     return FileUploadV2Result(status=response.status, body=await response.text())
         client._upload_file = upload
